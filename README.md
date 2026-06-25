@@ -10,7 +10,9 @@ A Natural Language Processing (NLP) project that detects potentially fake online
 Developed by **Dionis**.
 
 ---
+<img width="604" height="565" alt="image" src="https://github.com/user-attachments/assets/1f61dcf3-5dd4-4db5-9c11-518da951842c" />
 
+---
 ## Overview
 
 Online platforms are increasingly affected by fake reviews that can manipulate customer decisions. This project analyzes review text and classifies it as:
