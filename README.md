@@ -60,7 +60,7 @@ The final decision is based on a weighted scoring mechanism that evaluates multi
 Clone the repository:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/fake-review-detector.git
+git clone https://github.com/Dionis-bit/fake-review-detector.git
 cd fake-review-detector
 ```
 
