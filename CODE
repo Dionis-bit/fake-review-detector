@@ -1,0 +1,375 @@
+# ================================================================
+#   FAKE REVIEW DETECTOR  v2.0
+#   Tech: NLP (NLTK VADER) + Rule-Based Classification
+#   Klasifikon reviews si: GENUINE ose SUSPICIOUS
+# ================================================================
+
+import re
+import sys
+from collections import Counter
+
+# ── Kontrollo librari të nevojshme ──────────────────────────────
+try:
+    import nltk
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer
+    from nltk.corpus import stopwords
+    # Shkarko resurset nëse nuk i ke
+    for resource in ['vader_lexicon', 'stopwords']:
+        try:
+            nltk.data.find(f'sentiment/{resource}' if resource == 'vader_lexicon' else f'corpora/{resource}')
+        except LookupError:
+            nltk.download(resource, quiet=True)
+    NLP_AVAILABLE = True
+except ImportError:
+    NLP_AVAILABLE = False
+
+
+# ================================================================
+#   PJESA 1 — NLP: ANALIZA E SENTIMENTIT
+#   Perdor VADER (Valence Aware Dictionary and sEntiment Reasoner)
+#   Nje nga mjetet me te njohura NLP per analiza sentimenti
+# ================================================================
+
+def analize_sentimenti(tekst):
+    """
+    VADER analizon tekstin dhe kthen 4 vlera:
+      - pos  : perqindja pozitive  (0.0 - 1.0)
+      - neg  : perqindja negative  (0.0 - 1.0)
+      - neu  : perqindja neutrale  (0.0 - 1.0)
+      - compound : score total     (-1.0 = negativ, +1.0 = pozitiv)
+
+    Reviews te rreme zakonisht kane compound SHUME te larte (> 0.8)
+    sepse jane te ekzagjeruara pozitivisht.
+    """
+    if not NLP_AVAILABLE:
+        return {'pos': 0, 'neg': 0, 'neu': 1, 'compound': 0}
+
+    sia = SentimentIntensityAnalyzer()
+    scores = sia.polarity_scores(tekst)
+    return scores
+
+
+# ================================================================
+#   PJESA 2 — NLP: PASTRIMI I TEKSTIT
+#   Kjo quhet "Text Preprocessing" ne NLP
+# ================================================================
+
+def preprocessing(tekst):
+    """
+    Hapat klasike te NLP preprocessing:
+    1. Lowercase  → kthe ne shkronja te vogla
+    2. Remove punctuation → hiq simbolet
+    3. Tokenization → ndaj ne fjale (tokens)
+    4. Remove stopwords → hiq fjalet pa kuptim ('the','a','is')
+    """
+    # Hapi 1: Lowercase
+    tekst_vogel = tekst.lower()
+
+    # Hapi 2: Hiq simbolet, mbaj vetem shkronja dhe hapesira
+    tekst_pastro = re.sub(r'[^a-z\s]', ' ', tekst_vogel)
+    tekst_pastro = re.sub(r'\s+', ' ', tekst_pastro).strip()
+
+    # Hapi 3: Tokenization - ndaj ne fjale individuale
+    tokens = tekst_pastro.split()
+
+    # Hapi 4: Hiq stopwords (nese nltk eshte disponueshem)
+    if NLP_AVAILABLE:
+        try:
+            stop_words = set(stopwords.words('english'))
+            tokens_filtro = [t for t in tokens if t not in stop_words]
+        except Exception:
+            tokens_filtro = tokens
+    else:
+        stop_words_baze = {'the','a','an','is','it','and','or','i','this',
+                           'was','for','to','of','my','with','very','so','are','be'}
+        tokens_filtro = [t for t in tokens if t not in stop_words_baze]
+
+    return tokens_filtro
+
+
+# ================================================================
+#   PJESA 3 — FEATURE EXTRACTION (Nxjerrja e karakteristikave)
+#   Ne NLP keto quhen "features" - vlerat qe i japim modelit
+# ================================================================
+
+def nxjerr_features(tekst):
+    """
+    Nxjerr 8 features (karakteristika) nga teksti.
+    Cdo feature mat nje aspekt te ndryshëm te reviews se rreme.
+    """
+    tokens = preprocessing(tekst)
+    sentiment = analize_sentimenti(tekst)
+
+    features = {}
+
+    # FEATURE 1: Gjatësia (numri i fjalëve)
+    features['nr_fjaleve'] = len(tekst.split())
+
+    # FEATURE 2: Sentiment compound score (NLP)
+    features['sentiment_compound'] = round(sentiment['compound'], 3)
+
+    # FEATURE 3: Sentiment pozitiv score (NLP)
+    features['sentiment_pozitiv'] = round(sentiment['pos'], 3)
+
+    # FEATURE 4: Perqindja e germave KAPITALE
+    shkronjat = [c for c in tekst if c.isalpha()]
+    kapitalet = [c for c in tekst if c.isupper()]
+    features['perqindja_caps'] = round(
+        len(kapitalet) / len(shkronjat) * 100 if shkronjat else 0, 1)
+
+    # FEATURE 5: Dendesia e pikecuditeseve
+    features['nr_pikecuditese'] = tekst.count('!')
+
+    # FEATURE 6: Lexiku unik (type-token ratio)
+    # Nese nje review ka shume fjale te njejta, ky raport eshte i ulet
+    features['ratio_unik'] = round(
+        len(set(tokens)) / len(tokens) if tokens else 1.0, 3)
+
+    # FEATURE 7: Fjale ekzagjeruese (fjalor i paracaktuar)
+    fjalori_ekzagjerues = {
+        'amazing', 'perfect', 'incredible', 'fantastic', 'outstanding',
+        'exceptional', 'superb', 'unbelievable', 'awesome', 'obsessed',
+        'best ever', 'must buy', 'highly recommend', 'changed my life',
+        'best product', 'absolutely love', 'five stars', 'love it'
+    }
+    tekst_lower = tekst.lower()
+    features['nr_fjalesh_ekzagjeruese'] = sum(
+        1 for f in fjalori_ekzagjerues if f in tekst_lower)
+
+    # FEATURE 8: Permendje specifike (shenjë e reviews se vertete)
+    # Reviews te verteta zakonisht permendine detaje konkrete
+    fjale_specifike = {'days', 'weeks', 'months', 'size', 'color', 'colour',
+                       'price', 'quality', 'delivery', 'shipping', 'material',
+                       'battery', 'screen', 'weight', 'broke', 'returned',
+                       'however', 'but', 'although', 'issue', 'problem'}
+    features['nr_detajesh_specifike'] = sum(
+        1 for f in fjale_specifike if f in tekst_lower)
+
+    return features, sentiment
+
+
+# ================================================================
+#   PJESA 4 — KLASIFIKIMI (Classification)
+#   Kjo eshte logjika qendrore: vendos GENUINE apo SUSPICIOUS
+# ================================================================
+
+def klasifiko(features, sentiment):
+    """
+    Rule-Based Classification:
+    Secila rule i shton pike "dyshimi" (0-100).
+    Ne fund vendos klasen bazuar ne totalin.
+
+    Returns:
+        score     : 0 (genuine) → 100 (suspicious)
+        klasa     : "GENUINE" ose "SUSPICIOUS"
+        evidencat : lista e arsyeve
+    """
+    score = 0
+    evidencat = []
+
+    # ── RULE 1: Sentiment shume i larte (NLP Feature) ──────────
+    # VADER compound mbi 0.85 = ekzagjerim pozitiv i dyshimte
+    if features['sentiment_compound'] > 0.85:
+        score += 22
+        evidencat.append(f"[NLP] Sentiment shume pozitiv (compound={features['sentiment_compound']})")
+    elif features['sentiment_compound'] > 0.70:
+        score += 10
+        evidencat.append(f"[NLP] Sentiment pozitiv i larte (compound={features['sentiment_compound']})")
+
+    # ── RULE 2: Fjale ekzagjeruese ───────────────────────────────
+    n = features['nr_fjalesh_ekzagjeruese']
+    if n >= 3:
+        score += 22
+        evidencat.append(f"[NLP] {n} fjale ekzagjeruese te detektuara")
+    elif n >= 1:
+        score += 10
+        evidencat.append(f"[NLP] {n} fjale ekzagjeruese")
+
+    # ── RULE 3: Germa KAPITALE ───────────────────────────────────
+    caps = features['perqindja_caps']
+    if caps > 40:
+        score += 20
+        evidencat.append(f"[TEXT] {caps}% germa kapitale (limite: 40%)")
+    elif caps > 20:
+        score += 8
+        evidencat.append(f"[TEXT] {caps}% germa kapitale (limite: 20%)")
+
+    # ── RULE 4: Pikecuditese te teperta ─────────────────────────
+    pic = features['nr_pikecuditese']
+    if pic > 5:
+        score += 15
+        evidencat.append(f"[TEXT] {pic} pikecuditese (limite: 5)")
+    elif pic > 2:
+        score += 7
+        evidencat.append(f"[TEXT] {pic} pikecuditese")
+
+    # ── RULE 5: Gjatesia shume e shkurter ───────────────────────
+    nf = features['nr_fjaleve']
+    if nf < 5:
+        score += 18
+        evidencat.append(f"[TEXT] Vetem {nf} fjale - review shume e shkurter")
+    elif nf < 10:
+        score += 8
+        evidencat.append(f"[TEXT] {nf} fjale - review e shkurter")
+
+    # ── RULE 6: Diversiteti i fjalorit te ulet ──────────────────
+    ratio = features['ratio_unik']
+    if ratio < 0.4:
+        score += 12
+        evidencat.append(f"[NLP] Fjalor i paket - ratio unik={ratio} (limite: 0.4)")
+    elif ratio < 0.6:
+        score += 5
+        evidencat.append(f"[NLP] Fjalor mesatar - ratio unik={ratio}")
+
+    # ── BONUS: Detaje specifike ulin scoren ─────────────────────
+    det = features['nr_detajesh_specifike']
+    if det >= 3:
+        score -= 12
+        evidencat.append(f"[NLP] ✅ {det} detaje specifike - shenjë autenticiteti")
+    elif det >= 1:
+        score -= 5
+        evidencat.append(f"[NLP] ✅ {det} fjale specifike")
+
+    # Kufizo score ne 0-100
+    score = max(0, min(100, score))
+
+    # Klasifikimi final
+    if score >= 50:
+        klasa = "SUSPICIOUS"
+    else:
+        klasa = "GENUINE"
+
+    return score, klasa, evidencat
+
+
+# ================================================================
+#   PJESA 5 — OUTPUT: SHFAQJA E REZULTATEVE
+# ================================================================
+
+NGJYRA = {
+    'kuqe'   : '\033[91m',
+    'gjelber': '\033[92m',
+    'verdhe' : '\033[93m',
+    'blu'    : '\033[94m',
+    'bold'   : '\033[1m',
+    'reset'  : '\033[0m',
+}
+
+def ngjyros(tekst, ngjyra):
+    return f"{NGJYRA.get(ngjyra,'')}{tekst}{NGJYRA['reset']}"
+
+
+def shfaq_rezultatin(tekst, score, klasa, features, sentiment, evidencat):
+    """Shfaq rezultatin e plote ne terminal."""
+
+    print("\n" + "═"*62)
+    print(ngjyros("   🔍  FAKE REVIEW DETECTOR  —  REZULTATI", 'bold'))
+    print("═"*62)
+
+    # Preview i tekstit
+    preview = tekst[:80] + ("..." if len(tekst) > 80 else "")
+    print(f"\n📝 Review: \"{preview}\"")
+
+    # ── NLP Features ────────────────────────────────────────────
+    print(f"\n{ngjyros('── NLP ANALIZA (VADER Sentiment)', 'blu')}")
+    bar_pos = "█" * int(sentiment['pos'] * 20)
+    bar_neg = "█" * int(sentiment['neg'] * 20)
+    bar_neu = "█" * int(sentiment['neu'] * 20)
+    print(f"  Pozitiv  [{bar_pos:<20}] {sentiment['pos']:.2f}")
+    print(f"  Negativ  [{bar_neg:<20}] {sentiment['neg']:.2f}")
+    print(f"  Neutral  [{bar_neu:<20}] {sentiment['neu']:.2f}")
+    print(f"  Compound Score: {ngjyros(str(sentiment['compound']), 'verdhe')}")
+
+    # ── Text Features ────────────────────────────────────────────
+    print(f"\n{ngjyros('── TEXT FEATURES', 'blu')}")
+    print(f"  Fjale totale     : {features['nr_fjaleve']}")
+    print(f"  Germa KAPITALE   : {features['perqindja_caps']}%")
+    print(f"  Pikecuditese (!) : {features['nr_pikecuditese']}")
+    print(f"  Ratio fjalor unik: {features['ratio_unik']}")
+    print(f"  Fjale ekzaguese  : {features['nr_fjalesh_ekzagjeruese']}")
+    print(f"  Detaje specifike : {features['nr_detajesh_specifike']}")
+
+    # ── Evidencat ────────────────────────────────────────────────
+    if evidencat:
+        print(f"\n{ngjyros('── ARSYET E KLASIFIKIMIT', 'blu')}")
+        for e in evidencat:
+            ikona = "⚠️ " if "✅" not in e else ""
+            print(f"  {ikona}{e}")
+
+    # ── Score bar ────────────────────────────────────────────────
+    print(f"\n{ngjyros('── SCORE', 'blu')}")
+    blloku = int(score / 5)
+    bar = ngjyros("█" * blloku, 'kuqe') + "░" * (20 - blloku)
+    print(f"  [{bar}] {score}/100")
+
+    # ── Verdikti Final ───────────────────────────────────────────
+    print("\n" + "═"*62)
+    if klasa == "GENUINE":
+        print(ngjyros(f"  ✅  KLASIFIKIMI: GENUINE  (Score: {score}/100)", 'gjelber'))
+        print(ngjyros("  Kjo review duket autentike.", 'gjelber'))
+    else:
+        print(ngjyros(f"  🚨  KLASIFIKIMI: SUSPICIOUS  (Score: {score}/100)", 'kuqe'))
+        print(ngjyros("  Kjo review ka karakteristika te reviews se rreme.", 'kuqe'))
+    print("═"*62 + "\n")
+
+
+# ================================================================
+#   PJESA 6 — FUNKSIONI KRYESOR PUBLIK
+# ================================================================
+
+def analize_review(tekst):
+    """
+    Funksioni kryesor: merr nje tekst review dhe kthen klasifikimin.
+    Mund te importohet dhe perdoret nga skedare te tjere.
+
+    Returns: (score, klasa)  →  (int, "GENUINE" | "SUSPICIOUS")
+    """
+    if not tekst or not tekst.strip():
+        print("⚠️  Review nuk mund te jete bosh!")
+        return None, None
+
+    features, sentiment = nxjerr_features(tekst)
+    score, klasa, evidencat = klasifiko(features, sentiment)
+    shfaq_rezultatin(tekst, score, klasa, features, sentiment, evidencat)
+
+    return score, klasa
+
+
+# ================================================================
+#   PJESA 7 — PROGRAMI INTERAKTIV (main)
+# ================================================================
+
+def main():
+    print(ngjyros("\n" + "═"*62, 'bold'))
+    print(ngjyros("   🛡️  FAKE REVIEW DETECTOR  v2.0", 'bold'))
+    print(ngjyros("   Tech: NLP (VADER) + Rule-Based Classification", 'blu'))
+    print(ngjyros("═"*62 + "\n", 'bold'))
+
+    if not NLP_AVAILABLE:
+        print("⚠️  NLTK nuk u gjet. Instalo me: pip install nltk")
+        print("   Duke vazhduar me analiza bazike...\n")
+
+    print("Shtypni 'FUND' per te dale.\n")
+
+    while True:
+        print("─"*62)
+        review = input("➤ Ngjis ose shkruaj nje review:\n  > ").strip()
+
+        if review.upper() in ('FUND', 'EXIT', 'QUIT', 'Q'):
+            print(ngjyros("\n👋 Mirupafshim!\n", 'gjelber'))
+            break
+
+        if len(review) < 3:
+            print("⚠️  Shkruaj te pakten 3 karaktere.\n")
+            continue
+
+        analize_review(review)
+
+        vazhdo = input("🔄 Analize tjeter? (po/jo): ").strip().lower()
+        if vazhdo not in ('po', 'p', 'yes', 'y'):
+            print(ngjyros("\n👋 Mirupafshim!\n", 'gjelber'))
+            break
+
+
+if __name__ == "__main__":
+    main()
