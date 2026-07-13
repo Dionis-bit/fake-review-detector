@@ -1,4 +1,4 @@
-# # Fake Review Detector
+#Fake Review Detector
 
 A Natural Language Processing (NLP) project that detects potentially fake online reviews using a hybrid approach combining:
 
